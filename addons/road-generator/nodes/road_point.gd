@@ -490,6 +490,9 @@ func _notification(what):
 		if _skip_next_on_transform:
 			_skip_next_on_transform = false
 			return
+		if Engine.is_editor_hint() and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+			if _is_multi_roadpoint_selection() or RoadGeneratorGlobals.multiselect_drag_active:
+				return
 		var low_poly = Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) and Engine.is_editor_hint()
 		
 		# Skip no-op notifications (e.g. tree re-entry), except the transform
@@ -499,6 +502,19 @@ func _notification(what):
 
 		if mag_changed or low_poly_released or !global_transform.is_equal_approx(_last_emitted_transform):
 			emit_transform(low_poly)
+
+
+func _is_multi_roadpoint_selection() -> bool:
+	var selection = EditorInterface.get_selection()
+	if not is_instance_valid(selection):
+		return false
+	var roadpoint_count := 0
+	for selected in selection.get_selected_nodes():
+		if selected is RoadPoint:
+			roadpoint_count += 1
+			if roadpoint_count > 1:
+				return true
+	return false
 
 
 func emit_transform(low_poly=false):

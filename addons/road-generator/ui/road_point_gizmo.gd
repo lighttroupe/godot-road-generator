@@ -119,12 +119,24 @@ func setup_lane_widgets():
 
 
 func _has_gizmo(spatial) -> bool:
+	if RoadGeneratorGlobals.multiselect_drag_active:
+		return false
+	if _get_selected_roadpoint_count() > 1:
+		return false
 	return spatial is RoadPoint
 
 
 func _redraw(gizmo) -> void:
 	gizmo.clear()
 	var point = gizmo.get_node_3d() as RoadPoint
+	if RoadGeneratorGlobals.multiselect_drag_active:
+		lane_widget.visible = false
+		return
+	var selected_count := _get_selected_roadpoint_count()
+	if selected_count > 1:
+		lane_widget.visible = false
+		return
+	var single_selected_point := selected_count == 1 and point.is_road_point_selected(_editor_selection)
 	var need_size_update = prior_lane_width < 0 or prior_lane_width != point.lane_width
 	prior_lane_width = point.lane_width
 
@@ -169,11 +181,12 @@ func _redraw(gizmo) -> void:
 		else:
 			# Road segments, make invisible but stll clickable
 			gizmo.add_mesh(_mesh, GizmoHiddenMat)
-		# While .add_mesh above supports an input transform, array triangs do not
-		# so, cannot just use the segmenet mesh directly here sadly.
-		gizmo.add_collision_triangles(_mesh.generate_triangle_mesh())
+		if single_selected_point:
+			# While .add_mesh above supports an input transform, array triangs do not
+			# so, cannot just use the segmenet mesh directly here sadly.
+			gizmo.add_collision_triangles(_mesh.generate_triangle_mesh())
 
-	if not point.is_road_point_selected(_editor_selection):
+	if not single_selected_point:
 		return
 
 	# Add mag handles
@@ -237,6 +250,14 @@ func _redraw(gizmo) -> void:
 			x_pos += lane_width
 		else:
 			div.visible = false
+
+
+func _get_selected_roadpoint_count() -> int:
+	var count := 0
+	for selected in _editor_selection.get_selected_nodes():
+		if selected is RoadPoint:
+			count += 1
+	return count
 
 
 func _get_handle_name(gizmo: EditorNode3DGizmo, index: int, secondary: bool) -> String:

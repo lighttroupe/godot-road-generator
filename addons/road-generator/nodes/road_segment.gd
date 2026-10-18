@@ -823,6 +823,13 @@ func _normal_for_offset_legacy(curve: Curve3D, sample_position: float) -> Vector
 
 ## Enforce consistent lane width, at the cost of overlapping geometry.
 func _normal_for_offset_eased(curve: Curve3D, sample_position: float) -> Vector3:
+	if not is_finite(sample_position):
+		return start_point.transform.basis.x * _start_flip_mult
+	var normalized_sample_position := clampf(sample_position, 0.0, 1.0)
+	var baked_length := curve.get_baked_length()
+	if not is_finite(baked_length) or baked_length <= 0.0001:
+		return start_point.transform.basis.x * _start_flip_mult
+
 	# Would be nice, but not producing usable tilting even after using set_point_tilt
 	#var transform = curve.sample_baked_with_rotation(sample_position, true, true)
 	#return transform.basis.x
@@ -830,19 +837,29 @@ func _normal_for_offset_eased(curve: Curve3D, sample_position: float) -> Vector3
 	var offset_amount = 0.002 # TODO: Consider basing this on lane width.
 	var start_offset: float
 	var end_offset: float
-	if sample_position <= 0.0 + offset_amount:
+	if normalized_sample_position <= 0.0 + offset_amount:
 		# Use exact basis of RoadPoint to ensure geometry lines up.
 		return start_point.transform.basis.x * _start_flip_mult
-	elif sample_position >= 1.0 - offset_amount * 0.5:
+	elif normalized_sample_position >= 1.0 - offset_amount * 0.5:
 		# Use exact basis of RoadPoint to ensure geometry lines up.
 		return end_point.transform.basis.x * _end_flip_mult
 	else:
-		start_offset = sample_position - offset_amount * 0.5
-		end_offset = sample_position + offset_amount * 0.5
+		start_offset = normalized_sample_position - offset_amount * 0.5
+		end_offset = normalized_sample_position + offset_amount * 0.5
 
-	var pt1:Vector3 = curve.sample_baked(start_offset * curve.get_baked_length())
-	var pt2:Vector3 = curve.sample_baked(end_offset * curve.get_baked_length())
+	var sample_start := start_offset * baked_length
+	var sample_end := end_offset * baked_length
+	if not is_finite(sample_start) or not is_finite(sample_end):
+		return start_point.transform.basis.x * _start_flip_mult
+
+	var pt1:Vector3 = curve.sample_baked(sample_start)
+	var pt2:Vector3 = curve.sample_baked(sample_end)
+	if not pt1.is_finite() or not pt2.is_finite():
+		return start_point.transform.basis.x * _start_flip_mult
+
 	var tangent_l:Vector3 = pt2 - pt1
+	if tangent_l.length_squared() <= 0.000001:
+		return start_point.transform.basis.x * _start_flip_mult
 
 	# Using local transforms. Both are transforms relative to the parent RoadContainer,
 	# and the current mesh we are writing to already has the inverse of the start_point
@@ -852,13 +869,17 @@ func _normal_for_offset_eased(curve: Curve3D, sample_position: float) -> Vector3
 
 	# TODO: calculate influence based on relative lengths of handles,
 	# as this method will perform the same easing regardless of handles
-	var sample_eased = ease(sample_position, smooth_amount)
+	var sample_eased = ease(normalized_sample_position, smooth_amount)
+	if not is_finite(sample_eased):
+		sample_eased = normalized_sample_position
 
 	var up_vec_l:Vector3 = lerp(
 		start_up.normalized(),
 		end_up.normalized(),
 		sample_eased)
 	var normal_l = up_vec_l.cross(tangent_l)
+	if normal_l.length_squared() <= 0.000001:
+		return start_point.transform.basis.x * _start_flip_mult
 
 
 	return normal_l.normalized()

@@ -46,6 +46,15 @@ var _lock_z_rotation := false
 
 var _edi_debug := false
 
+var _multiselect_drag_tracking := false
+var _multiselect_drag_roadpoints: Array[Node] = []
+var _multiselect_drag_candidates: Array[Node] = []
+var _multiselect_drag_start_transforms: Dictionary = {}
+var _recent_multiselect_roadpoints: Array[Node] = []
+var _pending_selection_restore_roadpoints: Array[Node] = []
+var _pending_selection_restore_frames := 0
+var _was_lmb_down := false
+
 # For use by road_point_edit and panel, keys are props on RoadPoint
 var copy_attributes:Dictionary = {}
 
@@ -57,6 +66,8 @@ var copy_attributes:Dictionary = {}
 
 
 func _enter_tree():
+	RoadGeneratorGlobals.multiselect_drag_active = false
+	_was_lmb_down = false
 	add_node_3d_gizmo_plugin(road_point_gizmo)
 	add_node_3d_gizmo_plugin(road_intersection_gizmo)
 	add_inspector_plugin(road_point_editor)
@@ -95,6 +106,8 @@ func _enter_tree():
 
 
 func _exit_tree():
+	RoadGeneratorGlobals.multiselect_drag_active = false
+	_was_lmb_down = false
 	_eds.disconnect("selection_changed", self._on_selection_changed)
 	disconnect("scene_changed", self._on_scene_changed)
 	disconnect("scene_closed", self._on_scene_closed)
@@ -112,6 +125,197 @@ func _exit_tree():
 
 func _physics_process(delta: float) -> void:
 	connection_tool._physics_process(delta)
+	var lmb_down := Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
+	if lmb_down and not _was_lmb_down:
+		capture_multiselect_drag_candidates_if_needed()
+	_was_lmb_down = lmb_down
+	_track_multiselect_drag_state()
+	_apply_pending_selection_restore()
+	_update_multiselect_drag_preview()
+
+
+func capture_multiselect_drag_candidates_if_needed() -> void:
+	if _multiselect_drag_tracking:
+		return
+	var drag_candidates := get_selected_roadpoints()
+	if drag_candidates.size() <= 1 and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+		drag_candidates = _get_valid_roadpoints(_recent_multiselect_roadpoints)
+	_capture_multiselect_drag_candidates(drag_candidates)
+
+
+func _capture_multiselect_drag_candidates(nodes: Array[Node]) -> void:
+	_clear_multiselect_drag_candidates()
+	for point_node in _get_valid_roadpoints(nodes):
+		_multiselect_drag_candidates.append(point_node)
+		_multiselect_drag_start_transforms[point_node.get_instance_id()] = point_node.global_transform
+
+
+func _get_valid_roadpoints(nodes: Array[Node]) -> Array[Node]:
+	var valid_roadpoints: Array[Node] = []
+	for point_node in nodes:
+		if not is_instance_valid(point_node):
+			continue
+		if not point_node is RoadPoint:
+			continue
+		valid_roadpoints.append(point_node)
+	return valid_roadpoints
+
+
+func _update_multiselect_drag_preview() -> void:
+	if not Engine.is_editor_hint():
+		return
+	if tool_mode != _road_toolbar.InputMode.SELECT:
+		return
+	if not _multiselect_drag_tracking:
+		return
+	if not Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+		return
+	var previewed_segments := {}
+	for point_node in _multiselect_drag_roadpoints:
+		if not is_instance_valid(point_node):
+			continue
+		var point: RoadPoint = point_node
+		if not is_instance_valid(point.container):
+			continue
+		var use_lowpoly: bool = point.container.use_lowpoly_preview
+		_preview_drag_segment(point.prior_seg, use_lowpoly, previewed_segments)
+		_preview_drag_segment(point.next_seg, use_lowpoly, previewed_segments)
+
+
+func _preview_drag_segment(segment: RoadSegment, use_lowpoly: bool, previewed_segments: Dictionary) -> void:
+	if not is_instance_valid(segment):
+		return
+	if segment.is_queued_for_deletion():
+		return
+	if not is_instance_valid(segment.start_point) or not is_instance_valid(segment.end_point):
+		return
+	var segment_id := segment.get_instance_id()
+	if previewed_segments.has(segment_id):
+		return
+	previewed_segments[segment_id] = true
+	if not is_instance_valid(segment.road_mesh):
+		segment.do_roadmesh_creation()
+	if segment._matched_lanes == []:
+		segment._matched_lanes = segment._match_lanes()
+	segment.low_poly = use_lowpoly
+	var parent_node = segment.get_parent()
+	if not is_instance_valid(parent_node) or not parent_node is RoadPoint:
+		return
+	segment.transform = parent_node.transform.inverse()
+	segment.global_transform.origin = (
+		segment.start_point.global_transform.origin + segment.end_point.global_transform.origin) / 2.0
+	segment._update_curve()
+	segment._build_geo()
+
+
+func _track_multiselect_drag_state() -> void:
+	if not Engine.is_editor_hint():
+		return
+	var lmb_down := Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
+	if lmb_down:
+		if _multiselect_drag_candidates.size() <= 1 and _recent_multiselect_roadpoints.size() > 1:
+			_capture_multiselect_drag_candidates(_recent_multiselect_roadpoints)
+		if not _multiselect_drag_tracking and _multiselect_drag_candidates_moved():
+			_begin_multiselect_drag_tracking(_multiselect_drag_candidates)
+		return
+
+	if _multiselect_drag_tracking:
+		_commit_multiselect_drag_transforms()
+		if _multiselect_drag_roadpoints.size() > 1:
+			_pending_selection_restore_roadpoints = _multiselect_drag_roadpoints.duplicate()
+			_pending_selection_restore_frames = 12
+		_clear_multiselect_drag_tracking()
+	_clear_multiselect_drag_candidates()
+
+
+func _commit_multiselect_drag_transforms() -> void:
+	for point_node in _multiselect_drag_roadpoints:
+		if not is_instance_valid(point_node):
+			continue
+		var point: RoadPoint = point_node as RoadPoint
+		if point == null:
+			continue
+		var point_id := point.get_instance_id()
+		if _multiselect_drag_start_transforms.has(point_id):
+			var start_transform: Transform3D = _multiselect_drag_start_transforms[point_id]
+			if point.global_transform.is_equal_approx(start_transform):
+				continue
+		point.emit_transform(false)
+
+
+func _multiselect_drag_candidates_moved() -> bool:
+	if _multiselect_drag_candidates.size() <= 1:
+		return false
+	for point_node in _multiselect_drag_candidates:
+		if not is_instance_valid(point_node):
+			continue
+		var point_id := point_node.get_instance_id()
+		if not _multiselect_drag_start_transforms.has(point_id):
+			continue
+		var start_transform: Transform3D = _multiselect_drag_start_transforms[point_id]
+		if not point_node.global_transform.is_equal_approx(start_transform):
+			return true
+	return false
+
+
+func _begin_multiselect_drag_tracking(nodes: Array[Node]) -> void:
+	_multiselect_drag_roadpoints = _get_valid_roadpoints(nodes)
+	if _multiselect_drag_roadpoints.size() <= 1:
+		return
+	_multiselect_drag_tracking = true
+	_recent_multiselect_roadpoints = _multiselect_drag_roadpoints.duplicate()
+	RoadGeneratorGlobals.multiselect_drag_active = true
+
+
+func _clear_multiselect_drag_tracking() -> void:
+	_multiselect_drag_tracking = false
+	_multiselect_drag_roadpoints = []
+	RoadGeneratorGlobals.multiselect_drag_active = false
+
+
+func _clear_multiselect_drag_candidates() -> void:
+	_multiselect_drag_candidates = []
+	_multiselect_drag_start_transforms = {}
+
+
+func _apply_pending_selection_restore() -> void:
+	if _pending_selection_restore_frames <= 0:
+		return
+	if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+		return
+
+	var valid_roadpoints: Array[Node] = []
+	for point_node in _pending_selection_restore_roadpoints:
+		if is_instance_valid(point_node):
+			valid_roadpoints.append(point_node)
+	if valid_roadpoints.size() <= 1:
+		_pending_selection_restore_roadpoints = []
+		_pending_selection_restore_frames = 0
+		return
+
+	var selected_roadpoints := get_selected_roadpoints()
+	if selected_roadpoints.size() < valid_roadpoints.size():
+		_restore_editor_selection(valid_roadpoints)
+
+	_pending_selection_restore_frames -= 1
+	if _pending_selection_restore_frames <= 0:
+		_pending_selection_restore_roadpoints = []
+		_pending_selection_restore_frames = 0
+
+
+func _restore_editor_selection(nodes: Array[Node]) -> void:
+	_eds.clear()
+	for node in nodes:
+		if is_instance_valid(node):
+			_eds.add_node(node)
+
+
+func get_selected_roadpoints() -> Array[Node]:
+	var selected_roadpoints: Array[Node] = []
+	for selected in _eds.get_selected_nodes():
+		if selected is RoadPoint:
+			selected_roadpoints.append(selected)
+	return selected_roadpoints
 
 # ------------------------------------------------------------------------------
 #endregion
@@ -147,8 +351,15 @@ func is_road_node(node: Node) -> bool:
 
 ## Render the editor indicators for RoadPoints and RoadLanes if selected.
 func _on_selection_changed() -> void:
-	var nodes = _eds.get_selected_nodes()
-
+	var selected_roadpoint_count := get_selected_roadpoints().size()
+	if selected_roadpoint_count > 1:
+		_recent_multiselect_roadpoints = get_selected_roadpoints().duplicate()
+	elif not Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+		if not _multiselect_drag_tracking and _pending_selection_restore_frames <= 0:
+			_recent_multiselect_roadpoints = []
+	if not _multiselect_drag_tracking:
+		RoadGeneratorGlobals.multiselect_drag_active = false
+	
 	var selected_node := get_selected_node()
 
 	if not selected_node:
@@ -179,6 +390,14 @@ func _on_selection_changed() -> void:
 		update_overlays()
 		_hide_road_toolbar()
 		_last_selection_roadnode = false
+		return
+
+	if selected_roadpoint_count > 1:
+		road_point_gizmo.set_hidden()
+		road_intersection_gizmo.set_hidden()
+		var scene_root := EditorInterface.get_edited_scene_root()
+		if is_instance_valid(scene_root):
+			_refresh_all_roadpoint_gizmos(scene_root)
 		return
 
 	if selected_node is RoadPoint:
@@ -255,6 +474,14 @@ func _find_nodetype_recursive(node, target_type) -> Node:
 			if res != null:
 				return res
 	return null
+
+
+func _refresh_all_roadpoint_gizmos(node: Node) -> void:
+	for ch in node.get_children():
+		var nd: Node = ch
+		if nd is RoadPoint:
+			nd.update_gizmos()
+		_refresh_all_roadpoint_gizmos(nd)
 
 ## Returns the snapping threshold from the connection tool
 func get_snapping_distance() -> float:
@@ -371,7 +598,13 @@ func get_nearest_edge_road_point(container: RoadContainer, camera: Camera3D, mou
 
 func _handles(object: Object):
 	# Must return "true" in order to use "forward_spatial_gui_input".
-	return object is Node3D
+	if not object is Node3D:
+		return false
+	if tool_mode == _road_toolbar.InputMode.SELECT:
+		return false
+	if get_selected_roadpoints().size() > 1:
+		return false
+	return object is Node and is_road_node(object)
 
 
 # ------------------------------------------------------------------------------

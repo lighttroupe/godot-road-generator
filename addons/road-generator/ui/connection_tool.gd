@@ -190,6 +190,20 @@ func forward_3d_gui_input(camera: Camera3D, event: InputEvent) -> int:
 	# Preprocess event to update toolbar if necessary
 	handle_shortcuts(event, camera)
 
+	if plg.tool_mode == plg._road_toolbar.InputMode.SELECT:
+		if event is InputEventMouseButton:
+			var mouse_button_event: InputEventMouseButton = event
+			if mouse_button_event.button_index == MOUSE_BUTTON_LEFT and mouse_button_event.pressed:
+				plg.capture_multiselect_drag_candidates_if_needed()
+		snapping = SnapState.IDLE
+		_clear_targets()
+		return INPUT_PASS
+
+	if _is_multi_roadpoint_selection():
+		snapping = SnapState.IDLE
+		_clear_targets()
+		return INPUT_PASS
+	
 	# Handle inputs
 	var ret := 0
 	var selected:Node = plg.get_selected_node()
@@ -204,6 +218,16 @@ func forward_3d_gui_input(camera: Camera3D, event: InputEvent) -> int:
 	elif plg.tool_mode == plg._road_toolbar.InputMode.DELETE:
 		ret = _handle_delete_mode_input(camera, event)
 	return ret
+
+
+func _is_multi_roadpoint_selection() -> bool:
+	var roadpoint_count := 0
+	for selected in plg._edi.get_selection().get_selected_nodes():
+		if selected is RoadPoint:
+			roadpoint_count += 1
+			if roadpoint_count > 1:
+				return true
+	return false
 
 
 # ------------------------------------------------------------------------------
