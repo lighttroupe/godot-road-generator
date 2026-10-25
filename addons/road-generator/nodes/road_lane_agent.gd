@@ -91,7 +91,7 @@ func _ready() -> void:
 
 func assign_lane(new_lane:RoadLane) -> void:
 	if not is_instance_valid(new_lane):
-		push_warning("Attempted moving to invalid lane via %s" % self)
+		push_warning("Attempted moving to invalid lane via %s" % self.name)
 		return
 	# In race conditions, better to have a vehcile registered in two lanes at
 	# once to avoid getting lost in the void if something freed in between
@@ -158,7 +158,7 @@ func assign_manager() -> int:
 		road_manager = _target_manager
 		return OK
 	else:
-		push_error("Could not find road manager parent for %s" % self)
+		push_error("Could not find road manager parent for %s" % self.name)
 		return FAILED
 
 
