@@ -1604,7 +1604,7 @@ func subaction_create_intersection(source_rp: RoadPoint, rp_branch: RoadPoint, u
 			next_samedir = true
 			undo_redo.add_do_method(source_rp, "disconnect_roadpoint", RoadPoint.PointInit.NEXT, RoadPoint.PointInit.PRIOR) # one should be flipped?
 		elif next_graph.next_pt_init == next_graph.get_path_to(source_rp):
-			next_rp = prior_graph
+			next_rp = next_graph
 			next_samedir = false
 			undo_redo.add_do_method(source_rp, "disconnect_roadpoint", RoadPoint.PointInit.NEXT, RoadPoint.PointInit.NEXT) # one should be flipped?
 		else:
@@ -1711,7 +1711,7 @@ func subaction_delete_roadpoint(rp: RoadPoint, dissolve: bool, undo_redo:EditorU
 			next_samedir = true
 			undo_redo.add_do_method(rp, "disconnect_roadpoint", RoadPoint.PointInit.NEXT, RoadPoint.PointInit.PRIOR) # one should be flipped?
 		elif next_graph.next_pt_init == next_graph.get_path_to(rp):
-			next_rp = prior_graph
+			next_rp = next_graph
 			next_samedir = false
 			undo_redo.add_do_method(rp, "disconnect_roadpoint", RoadPoint.PointInit.NEXT, RoadPoint.PointInit.NEXT) # one should be flipped?
 		else:
