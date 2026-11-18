@@ -32,6 +32,10 @@ const _PRIMARY_ANGLE_WEIGHT: float = 6.0
 ## Error added to a candidate sitting beside or behind the source, ruling out
 ## same-side edges as through partners.
 const _PRIMARY_BEHIND_PENALTY: float = 1.0e6
+## Radians either side of dead ahead within which an unpaired edge's route to its
+## primary still counts as straight, so through lanes don't flip between
+## inner- and outer-aligned on float noise near the straight-across boundary.
+const _THROUGH_STRAIGHT_TOLERANCE: float = PI / 18.0  # 10 degrees
 
 # ------------------------------------------------------------------------------
 #endregion
@@ -80,12 +84,17 @@ func generate_lanes(intersection: Node3D, edges: Array[RoadPoint], container: Ro
 		var primary: int = primaries[i]
 
 		# Through lanes: every entering lane routes straight across to this edge's
-		# primary target. Surplus lanes merge onto its outermost exit lane, built
-		# from the divider outward.
+		# primary target. Lanes pair from the divider outward, except when an
+		# unpaired edge's route to its primary is a right turn, where they pair
+		# from the outside in so traffic lands in the nearest lane. Surplus lanes
+		# merge onto the last exit lane reached: the outermost normally, the
+		# innermost when pairing from the outside in.
 		if primary >= 0:
 			var exiting := _edge_exit_lanes(edges[primary], intersection)
+			var paired := primaries[primary] == i
+			var from_outer := not paired and _through_is_right_turn(edge, edges[primary], intersection)
 			for k in range(entering.size()):
-				var src: Dictionary = entering[k]
+				var src: Dictionary = entering[entering.size() - 1 - k] if from_outer else entering[k]
 				var entry := _lane_stop_position(edge, intersection, src["index"])
 				var exit_point := intersection.global_transform.origin
 				var exit_dir := entry_dir
@@ -93,7 +102,8 @@ func generate_lanes(intersection: Node3D, edges: Array[RoadPoint], container: Ro
 				var merged := false
 				if not exiting.is_empty():
 					merged = k >= exiting.size()
-					var target: Dictionary = exiting[mini(k, exiting.size() - 1)]
+					var t := mini(k, exiting.size() - 1)
+					var target: Dictionary = exiting[exiting.size() - 1 - t] if from_outer else exiting[t]
 					exit_point = _lane_stop_position(target["edge"], intersection, target["index"])
 					exit_dir = -_edge_inward_dir(target["edge"], intersection)
 					next_tag = target["tag"]
@@ -288,6 +298,9 @@ func _compute_edge_primaries(edges: Array[RoadPoint], intersection: Node3D) -> A
 		for j in range(count):
 			if j == i or not _edge_is_eligible(edges, j, intersection):
 				continue
+			# An edge with no exit lanes (e.g. inbound one-way) can't receive through traffic.
+			if _edge_exit_lanes(edges[j], intersection).is_empty():
+				continue
 			var rel := edges[j].global_transform.origin - origin_i
 			var along := rel.dot(dir_i)
 			var lateral := _pairing_lateral_cost(rel, dir_i, edges[i].lane_width)
@@ -320,6 +333,17 @@ func _turn_is_clockwise(edge: RoadPoint, target: RoadPoint, reference: RoadPoint
 	var to_target := target.global_transform.origin - edge.global_transform.origin
 	# Around +Y, a right turn yields a negative signed angle from ahead to target.
 	return ahead.signed_angle_to(to_target, up) < 0.0
+
+
+## True if reaching `primary` from `edge` is a right turn (drive-on-right),
+## measured edge-to-target against the inbound facing like `_turn_is_clockwise`'s
+## no-primary fallback. Routes within `_THROUGH_STRAIGHT_TOLERANCE` of dead
+## ahead count as straight, not right.
+func _through_is_right_turn(edge: RoadPoint, primary: RoadPoint, intersection: Node3D) -> bool:
+	var up := intersection.global_transform.basis.y.normalized()
+	var ahead := _edge_inward_dir(edge, intersection)
+	var to_target := primary.global_transform.origin - edge.global_transform.origin
+	return ahead.signed_angle_to(to_target, up) < -_THROUGH_STRAIGHT_TOLERANCE
 
 
 ## Finds an existing generated lane by name or creates one, ensuring group
