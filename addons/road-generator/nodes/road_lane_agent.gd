@@ -373,13 +373,13 @@ func find_nearest_lane(pos = null, distance: float = 50.0) -> RoadLane:
 	return closest_lane
 
 
-## Finds the poistion this many many units forward (or backwards, if negative)
+## Finds the position this many units forward (or backwards, if negative)
 ## along the current lane, assigning a new lane if the next one is reached
 func move_along_lane(move_distance: float) -> Vector3:
 	return _move_along_lane(move_distance, true, false).origin
 
 
-## Finds the poistion this many many units forward (or backwards, if negative)
+## Finds the position this many units forward (or backwards, if negative)
 ## along the current lane, without assigning a new lane
 func test_move_along_lane(move_distance: float) -> Vector3:
 	return _move_along_lane(move_distance, false, false).origin
@@ -398,12 +398,12 @@ func _move_along_lane(move_distance: float, update_lane: bool = true, with_rotat
 	if not is_instance_valid(current_lane):
 		current_lane = null
 		return actor.global_transform
-	var pos = actor.global_transform.origin
+	var pos: Vector3 = actor.global_transform.origin
 	var init_offset: float = sync_offset() if update_lane else _peek_offset()
-	var check_next_offset:float = init_offset + move_distance
-	var _update_lane = current_lane
-	var lane_length = current_lane.curve.get_baked_length()
-	var distance_left = 0
+	var check_next_offset: float = init_offset + move_distance
+	var _update_lane: RoadLane = current_lane
+	var lane_length: float = current_lane.curve.get_baked_length()
+	var reached_end := false
 	if check_next_offset > lane_length:
 		var is_first_hop := true
 		while check_next_offset > lane_length: # Target point is past the end of this curve
@@ -412,25 +412,24 @@ func _move_along_lane(move_distance: float, update_lane: bool = true, with_rotat
 			if DEBUG_OUT:
 				print_debug("Agent wrapping to next, paths %s vs node %s" % [
 					_update_lane.lanes_next, check_lane])
-			if ! is_instance_valid(check_lane):
-				distance_left = check_next_offset - lane_length
+			if not is_instance_valid(check_lane):
+				reached_end = true
 				check_next_offset = lane_length
 				break
 			check_next_offset -= lane_length
 			_update_lane = check_lane
 			lane_length = _update_lane.curve.get_baked_length()
-	else:
-		while check_next_offset < 0:
+	elif check_next_offset < 0.0:
+		while check_next_offset < 0.0:
 			var prior_lanes: Array[RoadLane] = _update_lane.get_prior_lanes()
 			var check_lane: RoadLane = null if prior_lanes.is_empty() else prior_lanes[0]
 			if DEBUG_OUT:
 				print_debug("Agent wrapping to prior, paths %s vs node %s" % [
 					_update_lane.lanes_prior, check_lane])
-			if ! is_instance_valid(check_lane):
-				distance_left = check_next_offset - init_offset
-				check_next_offset = 0
+			if not is_instance_valid(check_lane):
+				reached_end = true
+				check_next_offset = 0.0
 				break
-			init_offset = 0
 			_update_lane = check_lane
 			check_next_offset += _update_lane.curve.get_baked_length()
 	var new_transform: Transform3D
@@ -444,7 +443,7 @@ func _move_along_lane(move_distance: float, update_lane: bool = true, with_rotat
 			assign_lane(_update_lane, check_next_offset)
 		if current_lane == _update_lane:
 			_set_lane_offset(check_next_offset, new_point)
-	if update_lane && distance_left != 0: #workaround for missing connections
+	if update_lane and reached_end: #workaround for missing connections
 		_update_lane = find_nearest_lane(pos - actor.global_transform.basis.z * sign(move_distance), 1)
 		if is_instance_valid(_update_lane) && _update_lane != current_lane: # it's still possible to find merging transition lanes
 			assign_lane(_update_lane)
@@ -537,15 +536,16 @@ func change_lane(direction: int) -> int:
 ## or backward (move_dir == -1) direction
 ## Used for decision to change lanes from transition lanes (as there are no direct connection)
 func close_to_lane_end(proximity: float, move_dir: MoveDir) -> bool:
-	if ! is_instance_valid(current_lane) || proximity == 0 || move_dir == MoveDir.STOP:
+	if not is_instance_valid(current_lane) || proximity == 0 || move_dir == MoveDir.STOP:
 		return false
 	var links := current_lane.get_next_lanes() if move_dir == MoveDir.FORWARD else current_lane.get_prior_lanes()
 	if not links.is_empty():
 		return false
+	var curve: Curve3D = current_lane.curve
 	var offset := sync_offset()
-	var dist:float
+	var dist: float
 	if move_dir == MoveDir.FORWARD:
-		dist = current_lane.curve.get_baked_length() - offset
+		dist = curve.get_baked_length() - offset
 	else:
 		assert(move_dir == MoveDir.BACKWARD)
 		dist = offset
@@ -562,7 +562,7 @@ func find_continued_lane(lane_change_dir: LaneChangeDir, move_dir: MoveDir) -> i
 	while true:
 		var _new_lane_path = _new_lane.lane_right if lane_change_dir == LaneChangeDir.RIGHT else _new_lane.lane_left
 		_new_lane = _new_lane.get_node_or_null(_new_lane_path)
-		if ! _new_lane:
+		if not _new_lane:
 			return 0
 		count += lane_change_dir
 		var links: Array[RoadLane] = _new_lane.get_next_lanes() if move_dir == MoveDir.FORWARD else _new_lane.get_prior_lanes()
@@ -575,13 +575,13 @@ func find_continued_lane(lane_change_dir: LaneChangeDir, move_dir: MoveDir) -> i
 ## left lane (lane_change_dir == -1) or right lane (lane_change_dir = 1)
 ## Used for simple heuristic decision making of traffic balancing
 func cars_in_lane(lane_change_dir: LaneChangeDir) -> int:
-	if ! is_instance_valid(current_lane):
+	if not is_instance_valid(current_lane):
 		return -1
 	if lane_change_dir == LaneChangeDir.CURRENT:
 		return len(current_lane.get_vehicles())
 	var _lane_path = current_lane.lane_right if lane_change_dir == LaneChangeDir.RIGHT else current_lane.lane_left
 	var _lane:RoadLane = current_lane.get_node_or_null(_lane_path)
-	if ! _lane:
+	if not _lane:
 		return -1;
 	return len(_lane.get_vehicles())
 
